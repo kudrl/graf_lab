@@ -82,9 +82,6 @@ class FailurePlan:
     label: str
     removed_nodes: tuple[str, ...] = ()
     removed_edges: tuple[tuple[str, str], ...] = ()
-    water_level: float | None = None
-    flooded_nodes: tuple[str, ...] = ()
-    flooded_edges: tuple[tuple[str, str], ...] = ()
 
 
 def create_city_preset(preset_name: str, *, seed: int = 42) -> nx.Graph:
@@ -124,7 +121,6 @@ def generate_city_graph(
                 "label": node,
                 "x": float(x),
                 "y": float(y),
-                "elevation": float(y) + float(rng.uniform(-0.18, 0.18)),
             }
         )
 
@@ -157,7 +153,6 @@ def generate_city_graph(
                 label=node,
                 x=hx + float(rng.uniform(-0.25, 0.25)),
                 y=hy + float(rng.uniform(-0.25, 0.25)),
-                elevation=float(graph.nodes[hub].get("elevation", hy)) + float(rng.uniform(-0.12, 0.12)),
                 **attrs_fn(idx),
             )
             travel_time = float(rng.uniform(1.0, 3.5))
@@ -225,158 +220,6 @@ def generate_city_graph(
     graph.graph["mode"] = "urban_resilience"
     graph.graph["seed"] = int(seed)
     return graph
-
-
-def generate_random_shape_city_graph(
-    *,
-    intersections: int = 28,
-    homes: int = 22,
-    hospitals: int = 2,
-    power_plants: int = 1,
-    warehouses: int = 2,
-    shelters: int = 2,
-    bridge_count: int = 5,
-    seed: int = 42,
-) -> nx.Graph:
-    """Create a typed city graph on an irregular random territory."""
-    rng = np.random.default_rng(int(seed))
-    points = _random_shape_points(max(8, int(intersections)), rng)
-    graph = nx.Graph()
-
-    for idx, (x, y) in enumerate(points):
-        node = f"J{idx}"
-        graph.add_node(
-            node,
-            type="intersection",
-            label=node,
-            x=float(x),
-            y=float(y),
-            elevation=float(0.62 * y + 0.18 * x + rng.normal(0.0, 0.18)),
-        )
-
-    _connect_random_shape_roads(graph, rng)
-    for idx, (u, v) in enumerate(graph.edges()):
-        travel_time = max(0.4, _euclidean_distance(graph, u, v))
-        graph.edges[u, v].update(
-            {
-                "edge_type": "road",
-                "label": f"R{idx}",
-                "weight": travel_time,
-                "confidence": 100.0,
-                "travel_time": travel_time,
-                "capacity": float(rng.uniform(35.0, 120.0)),
-                "fragility": float(rng.uniform(0.12, 0.5)),
-            }
-        )
-
-    _mark_bridge_edges(graph, bridge_count, rng)
-    base_nodes = list(graph.nodes())
-
-    def attach(prefix: str, count: int, node_type: str, attrs_fn) -> None:
-        for idx in range(int(count)):
-            hub = str(rng.choice(base_nodes))
-            hx = float(graph.nodes[hub].get("x", 0.0))
-            hy = float(graph.nodes[hub].get("y", 0.0))
-            node = f"{prefix}{idx + 1}"
-            graph.add_node(
-                node,
-                type=node_type,
-                label=node,
-                x=hx + float(rng.uniform(-0.35, 0.35)),
-                y=hy + float(rng.uniform(-0.35, 0.35)),
-                elevation=float(graph.nodes[hub].get("elevation", hy)) + float(rng.uniform(-0.15, 0.15)),
-                **attrs_fn(idx),
-            )
-            travel_time = max(0.5, _euclidean_distance(graph, node, hub))
-            graph.add_edge(
-                node,
-                hub,
-                edge_type="road",
-                label=f"{node}-{hub}",
-                weight=travel_time,
-                confidence=100.0,
-                travel_time=travel_time,
-                capacity=float(rng.uniform(15.0, 60.0)),
-                fragility=float(rng.uniform(0.15, 0.6)),
-            )
-
-    attach(
-        "H",
-        homes,
-        "home",
-        lambda _idx: {
-            "population": int(rng.integers(3, 12)),
-            "power_need": True,
-            "water_need": True,
-            "medical_need": str(rng.choice(["low", "medium", "high"])),
-        },
-    )
-    attach(
-        "MED",
-        hospitals,
-        "hospital",
-        lambda _idx: {"service_capacity": int(rng.integers(35, 95)), "requires_power": True},
-    )
-    attach(
-        "PWR",
-        power_plants,
-        "power_plant",
-        lambda _idx: {"power_capacity": int(rng.integers(90, 180)), "failure_probability": float(rng.uniform(0.01, 0.08))},
-    )
-    attach("WH", warehouses, "warehouse", lambda _idx: {"food_capacity": int(rng.integers(80, 190))})
-    attach("SH", shelters, "shelter", lambda _idx: {"service_capacity": int(rng.integers(50, 150))})
-
-    graph.graph["mode"] = "urban_resilience"
-    graph.graph["shape"] = "random"
-    graph.graph["seed"] = int(seed)
-    return graph
-
-
-def _random_shape_points(count: int, rng: np.random.Generator) -> list[tuple[float, float]]:
-    points: list[tuple[float, float]] = []
-    lobes = rng.uniform(0.16, 0.34, size=5)
-    phases = rng.uniform(0.0, 2.0 * np.pi, size=5)
-    attempts = 0
-    while len(points) < int(count) and attempts < int(count) * 200:
-        attempts += 1
-        x = float(rng.uniform(-1.0, 1.0))
-        y = float(rng.uniform(-1.0, 1.0))
-        theta = float(np.arctan2(y, x))
-        radius = float(np.hypot(x, y))
-        boundary = 0.72
-        for idx, amp in enumerate(lobes):
-            boundary += float(amp) * float(np.sin((idx + 2) * theta + phases[idx])) / float(idx + 2)
-        boundary = max(0.42, min(0.98, boundary))
-        if radius <= boundary:
-            points.append((x * 6.0, y * 6.0))
-    if len(points) < int(count):
-        for idx in range(int(count) - len(points)):
-            angle = 2.0 * np.pi * idx / max(1, int(count))
-            points.append((float(np.cos(angle) * 4.0), float(np.sin(angle) * 4.0)))
-    return points
-
-
-def _connect_random_shape_roads(graph: nx.Graph, rng: np.random.Generator) -> None:
-    nodes = list(graph.nodes())
-    if len(nodes) < 2:
-        return
-
-    complete = nx.Graph()
-    complete.add_nodes_from(nodes)
-    for idx, u in enumerate(nodes):
-        for v in nodes[idx + 1:]:
-            complete.add_edge(u, v, weight=_euclidean_distance(graph, u, v))
-
-    graph.add_edges_from(nx.minimum_spanning_tree(complete, weight="weight").edges())
-    k_neighbors = min(4, max(1, len(nodes) - 1))
-    for u in nodes:
-        nearest = sorted(
-            (v for v in nodes if v != u),
-            key=lambda v: _euclidean_distance(graph, u, v),
-        )[:k_neighbors]
-        for v in nearest:
-            if rng.random() < 0.72:
-                graph.add_edge(u, v)
 
 
 def _mark_bridge_edges(graph: nx.Graph, bridge_count: int, rng: np.random.Generator) -> None:
@@ -462,7 +305,6 @@ def city_nodes_frame(graph: nx.Graph) -> pd.DataFrame:
                 "label": str(data.get("label", node)),
                 "x": float(data.get("x", 0.0)),
                 "y": float(data.get("y", 0.0)),
-                "elevation": float(data.get("elevation", data.get("y", 0.0))),
                 "population": int(_float(data.get("population"), 0.0)),
                 "service_capacity": int(_float(data.get("service_capacity"), 0.0)),
                 "power_capacity": int(_float(data.get("power_capacity"), 0.0)),
@@ -506,7 +348,6 @@ def apply_city_entity_edits(nodes: pd.DataFrame, edges: pd.DataFrame) -> nx.Grap
             label=str(row.get("label", node) or node),
             x=_float(row.get("x"), 0.0),
             y=_float(row.get("y"), 0.0),
-            elevation=_float(row.get("elevation"), _float(row.get("y"), 0.0)),
             population=int(_float(row.get("population"), 0.0)),
             service_capacity=int(_float(row.get("service_capacity"), 0.0)),
             power_capacity=int(_float(row.get("power_capacity"), 0.0)),
@@ -573,7 +414,6 @@ def add_city_entity(
         label=node_id,
         x=float(base.get("x", 0.0)) + 0.2,
         y=float(base.get("y", 0.0)) + 0.2,
-        elevation=float(base.get("elevation", base.get("y", 0.0))),
         population=int(population),
         service_capacity=int(service_capacity),
         power_capacity=int(power_capacity),
@@ -603,15 +443,10 @@ def build_failure_plan(
     selected_object: str | None = None,
     category: str = "power_plant",
     seed: int = 42,
-    water_level: float | None = None,
 ) -> FailurePlan:
     scenario = str(scenario)
     rng = np.random.default_rng(int(seed))
     count = max(1, int(count))
-
-    scenario_lower = scenario.lower()
-    if "flood" in scenario_lower or "затоп" in scenario_lower:
-        return _build_flood_plan(graph, water_level=water_level)
 
     if scenario in ("Удалить выбранный объект", "Remove selected object") and selected_object:
         return FailurePlan(f"Удалён объект {selected_object}", removed_nodes=(str(selected_object),))
@@ -655,32 +490,6 @@ def build_failure_plan(
     return FailurePlan("Без отказа")
 
 
-def _build_flood_plan(graph: nx.Graph, *, water_level: float | None = None) -> FailurePlan:
-    elevations = [float(data.get("elevation", data.get("y", 0.0))) for _, data in graph.nodes(data=True)]
-    if not elevations:
-        return FailurePlan("Flood: empty graph", water_level=0.0)
-    level = float(water_level) if water_level is not None else float(np.quantile(elevations, 0.35))
-    nodes = tuple(
-        str(node)
-        for node, data in graph.nodes(data=True)
-        if float(data.get("elevation", data.get("y", 0.0))) <= level
-    )
-    edges = []
-    for u, v in graph.edges():
-        u_level = float(graph.nodes[u].get("elevation", graph.nodes[u].get("y", 0.0)))
-        v_level = float(graph.nodes[v].get("elevation", graph.nodes[v].get("y", 0.0)))
-        if min(u_level, v_level) <= level:
-            edges.append((str(u), str(v)))
-    return FailurePlan(
-        f"Flood water_level={level:.2f}",
-        removed_nodes=nodes,
-        removed_edges=tuple(edges),
-        water_level=level,
-        flooded_nodes=nodes,
-        flooded_edges=tuple(edges),
-    )
-
-
 def simulate_failure_impact(graph: nx.Graph, plan: FailurePlan) -> dict[str, object]:
     before = _city_state(graph)
     damaged = graph.copy()
@@ -702,27 +511,13 @@ def simulate_failure_impact(graph: nx.Graph, plan: FailurePlan) -> dict[str, obj
     elif severity_value >= 0.1:
         severity = "средний"
 
-    result = {
+    return {
         "plan": plan,
         "before": before,
         "after": after,
         "severity": severity,
         "severity_value": float(severity_value),
     }
-    if plan.water_level is not None:
-        flooded_homes = [
-            node
-            for node in plan.flooded_nodes
-            if node in graph and graph.nodes[node].get("type") == "home"
-        ]
-        result["flood"] = {
-            "water_level": float(plan.water_level),
-            "flooded_nodes": len(plan.flooded_nodes),
-            "flooded_edges": len(plan.flooded_edges),
-            "flooded_homes": len(flooded_homes),
-            "flooded_population": int(sum(_population(graph, home) for home in flooded_homes)),
-        }
-    return result
 
 
 def format_impact_report(impact: dict[str, object]) -> str:
@@ -745,18 +540,6 @@ def format_impact_report(impact: dict[str, object]) -> str:
     reason = explain_failure_reason(plan, before, after)
     if reason:
         lines.extend(["", "Причина:", reason])
-    flood = impact.get("flood")
-    if isinstance(flood, dict):
-        lines.extend(
-            [
-                "",
-                "Flood:",
-                f"- water_level: {float(flood['water_level']):.2f}",
-                f"- flooded_nodes: {int(flood['flooded_nodes'])}",
-                f"- flooded_edges: {int(flood['flooded_edges'])}",
-                f"- flooded_population: {int(flood['flooded_population'])}",
-            ]
-        )
     return "\n".join(lines)
 
 
@@ -964,7 +747,6 @@ def _node_columns(prefix: str, data: dict) -> dict:
         f"{prefix}_label": data.get("label", ""),
         f"{prefix}_x": data.get("x", 0.0),
         f"{prefix}_y": data.get("y", 0.0),
-        f"{prefix}_elevation": data.get("elevation", data.get("y", 0.0)),
         f"{prefix}_population": data.get("population", 0),
         f"{prefix}_service_capacity": data.get("service_capacity", 0),
         f"{prefix}_power_capacity": data.get("power_capacity", 0),
@@ -982,10 +764,6 @@ def _apply_node_columns(graph: nx.Graph, node: str, prefix: str, row: pd.Series)
             "label": str(row.get(f"{prefix}_label", node)),
             "x": _float(row.get(f"{prefix}_x"), 0.0),
             "y": _float(row.get(f"{prefix}_y"), 0.0),
-            "elevation": _float(
-                row.get(f"{prefix}_elevation"),
-                _float(row.get(f"{prefix}_y"), 0.0),
-            ),
             "population": int(_float(row.get(f"{prefix}_population"), 0.0)),
             "service_capacity": int(_float(row.get(f"{prefix}_service_capacity"), 0.0)),
             "power_capacity": int(_float(row.get(f"{prefix}_power_capacity"), 0.0)),
@@ -1162,446 +940,3 @@ def _float(value, default: float) -> float:
     if not np.isfinite(result):
         return float(default)
     return result
-
-
-# ---------------------------------------------------------------------------
-# Potential Layer: node-level urban characteristics
-# ---------------------------------------------------------------------------
-
-def compute_node_potentials(graph: nx.Graph) -> pd.DataFrame:
-    """Compute 5 urban potential metrics for every node.
-
-    Returns a DataFrame with columns:
-        node, node_type, access_potential, connectivity_potential,
-        vulnerability_potential, service_potential, evacuation_potential.
-
-    All values are in [0, 1] after min-max normalization.
-    These are heuristic city-planning indicators, not a validated model.
-    """
-    nodes = list(graph.nodes())
-    if not nodes:
-        return pd.DataFrame(
-            columns=[
-                "node", "node_type",
-                "access_potential", "connectivity_potential",
-                "vulnerability_potential", "service_potential",
-                "evacuation_potential",
-            ]
-        )
-
-    # Pre-compute shortest path lengths (weighted by travel_time/weight).
-    try:
-        all_lengths = dict(nx.all_pairs_dijkstra_path_length(graph, weight="weight"))
-    except nx.NetworkXError:
-        all_lengths = {}
-
-    resource_types = list(RESOURCE_TYPES.keys())
-    resource_nodes: dict[str, list[str]] = {
-        rt: _nodes_by_type(graph, rt) for rt in resource_types
-    }
-
-    # Centralities for connectivity/vulnerability.
-    degree = dict(graph.degree())
-    max_deg = max(degree.values(), default=1)
-    closeness = nx.closeness_centrality(graph)
-    betweenness = nx.betweenness_centrality(graph, weight="weight", normalized=True)
-    shelters = _nodes_by_type(graph, "shelter")
-
-    rows = []
-    for node in nodes:
-        data = graph.nodes[node]
-        node_type = str(data.get("type", "node"))
-
-        # 1. Access potential: mean inverse distance to all resource categories.
-        access = _access_potential(graph, node, resource_nodes, all_lengths)
-
-        # 2. Connectivity potential: degree × closeness × path redundancy.
-        connectivity = _connectivity_potential(
-            graph, node, degree, max_deg, closeness,
-        )
-
-        # 3. Vulnerability potential: how much damage removing this node causes.
-        vulnerability = _vulnerability_potential(graph, node, betweenness)
-
-        # 4. Service potential: fraction of service capacity for service nodes.
-        service = _service_potential(graph, node, node_type)
-
-        # 5. Evacuation potential: how quickly residents can reach a shelter.
-        evacuation = _evacuation_potential(node, shelters, all_lengths)
-
-        rows.append({
-            "node": str(node),
-            "node_type": node_type,
-            "access_potential": access,
-            "connectivity_potential": connectivity,
-            "vulnerability_potential": vulnerability,
-            "service_potential": service,
-            "evacuation_potential": evacuation,
-        })
-
-    frame = pd.DataFrame(rows)
-    # Normalize each potential column to [0, 1] via min-max.
-    for col in [
-        "access_potential", "connectivity_potential",
-        "vulnerability_potential", "service_potential",
-        "evacuation_potential",
-    ]:
-        vals = frame[col].astype(float)
-        vmin, vmax = float(vals.min()), float(vals.max())
-        if vmax > vmin:
-            frame[col] = (vals - vmin) / (vmax - vmin)
-        else:
-            frame[col] = 0.0
-    return frame
-
-
-def _access_potential(
-    graph: nx.Graph,
-    node: str,
-    resource_nodes: dict[str, list[str]],
-    all_lengths: dict,
-) -> float:
-    """Mean inverse-distance to each resource category.
-
-    For each resource type, find the shortest path to *any* resource
-    of that type and take 1/(1+d).  Average across categories.
-    """
-    if node not in all_lengths:
-        return 0.0
-    distances_from_node = all_lengths[node]
-    scores: list[float] = []
-    for _rt, rn_list in resource_nodes.items():
-        if not rn_list:
-            scores.append(0.0)
-            continue
-        min_d = min(
-            (float(distances_from_node.get(r, float("inf"))) for r in rn_list),
-            default=float("inf"),
-        )
-        scores.append(1.0 / (1.0 + min_d) if np.isfinite(min_d) else 0.0)
-    return float(np.mean(scores)) if scores else 0.0
-
-
-def _connectivity_potential(
-    graph: nx.Graph,
-    node: str,
-    degree: dict,
-    max_deg: int,
-    closeness: dict,
-) -> float:
-    """degree_norm × closeness × path_redundancy.
-
-    path_redundancy = fraction of neighbors reachable by ≥ 2 independent paths.
-    """
-    deg_norm = float(degree.get(node, 0)) / max(1, max_deg)
-    close = float(closeness.get(node, 0.0))
-    # Path redundancy: for each neighbor, check if it's still reachable
-    # after removing the direct edge (proxy for edge-disjoint paths).
-    neighbors = list(graph.neighbors(node))
-    if not neighbors:
-        return 0.0
-    redundant = 0
-    for nb in neighbors:
-        # If the neighbor is in a biconnected component with the node,
-        # there exists an alternative path.
-        if graph.degree(nb) > 1 and graph.degree(node) > 1:
-            # Quick heuristic: check if removing the edge keeps them connected.
-            test = graph.copy()
-            test.remove_edge(node, nb)
-            if nx.has_path(test, node, nb):
-                redundant += 1
-    redundancy = float(redundant) / max(1, len(neighbors))
-    return float(deg_norm * close * (0.3 + 0.7 * redundancy))
-
-
-def _vulnerability_potential(
-    graph: nx.Graph,
-    node: str,
-    betweenness: dict,
-) -> float:
-    """betweenness × mean fragility of adjacent edges × inverse_redundancy."""
-    bet = float(betweenness.get(node, 0.0))
-    edges = list(graph.edges(node, data=True))
-    if not edges:
-        return bet
-    fragilities = [float(d.get("fragility", 0.0)) for _, _, d in edges]
-    mean_frag = float(np.mean(fragilities)) if fragilities else 0.0
-    # Inverse redundancy: 1 / degree as simple proxy.
-    inv_red = 1.0 / max(1, len(edges))
-    return float(bet * (0.4 + 0.6 * mean_frag) * (0.3 + 0.7 * inv_red))
-
-
-def _service_potential(graph: nx.Graph, node: str, node_type: str) -> float:
-    """Fraction of service capacity for service nodes, 0 for others."""
-    data = graph.nodes[node]
-    if node_type == "hospital":
-        cap = _float(data.get("service_capacity"), 0.0)
-    elif node_type == "shelter":
-        cap = _float(data.get("service_capacity"), 0.0)
-    elif node_type == "power_plant":
-        cap = _float(data.get("power_capacity"), 0.0)
-    elif node_type == "warehouse":
-        cap = _float(data.get("food_capacity"), 0.0)
-    elif node_type == "home":
-        cap = _float(data.get("population"), 0.0)
-    else:
-        return 0.0
-    return float(cap)  # Will be normalized later.
-
-
-def _evacuation_potential(
-    node: str,
-    shelters: list[str],
-    all_lengths: dict,
-) -> float:
-    """Inverse distance to the nearest shelter: 1/(1+d)."""
-    if not shelters or node not in all_lengths:
-        return 0.0
-    distances_from_node = all_lengths[node]
-    min_d = min(
-        (float(distances_from_node.get(s, float("inf"))) for s in shelters),
-        default=float("inf"),
-    )
-    return 1.0 / (1.0 + min_d) if np.isfinite(min_d) else 0.0
-
-
-# ---------------------------------------------------------------------------
-# Node interactions
-# ---------------------------------------------------------------------------
-
-def compute_node_interactions(graph: nx.Graph) -> pd.DataFrame:
-    """Compute pairwise interaction scores between important nodes.
-
-    Returns a DataFrame with columns: source, target, interaction_type,
-    distance, dependency_score, redundancy, shared_population.
-
-    Focuses on edges between service nodes and homes/intersections
-    to keep the matrix manageable.
-    """
-    important_types = {"home", "hospital", "power_plant", "warehouse", "shelter"}
-    important_nodes = [
-        str(n) for n, d in graph.nodes(data=True)
-        if d.get("type") in important_types
-    ]
-    if len(important_nodes) < 2:
-        return pd.DataFrame(
-            columns=[
-                "source", "target", "interaction_type",
-                "distance", "dependency_score", "redundancy",
-                "shared_population",
-            ]
-        )
-
-    try:
-        all_lengths = dict(nx.all_pairs_dijkstra_path_length(graph, weight="weight"))
-    except nx.NetworkXError:
-        all_lengths = {}
-
-    # Compute betweenness once for all dependency scores.
-    betweenness = nx.betweenness_centrality(graph, weight="weight", normalized=True)
-
-    rows = []
-    seen: set[frozenset] = set()
-    for src in important_nodes:
-        src_type = str(graph.nodes[src].get("type", "node"))
-        for dst in important_nodes:
-            if src == dst:
-                continue
-            pair_key = frozenset((src, dst))
-            if pair_key in seen:
-                continue
-            seen.add(pair_key)
-
-            dst_type = str(graph.nodes[dst].get("type", "node"))
-            interaction_type = _classify_interaction(src_type, dst_type)
-
-            # Shortest path distance.
-            dist = float("inf")
-            if src in all_lengths:
-                dist = float(all_lengths[src].get(dst, float("inf")))
-
-            # Dependency: how many shortest paths between other nodes
-            # pass through both src and dst (proxy via betweenness correlation).
-            dependency = _dependency_score(graph, src, dst, betweenness)
-
-            # Redundancy: number of edge-disjoint paths.
-            redundancy = _pair_redundancy(graph, src, dst)
-
-            # Shared population: sum of populations of homes reachable from both.
-            shared_pop = _shared_population(graph, src, dst, all_lengths)
-
-            if not np.isfinite(dist):
-                dist = 0.0
-
-            rows.append({
-                "source": src,
-                "target": dst,
-                "interaction_type": interaction_type,
-                "distance": round(float(dist), 3),
-                "dependency_score": round(float(dependency), 4),
-                "redundancy": int(redundancy),
-                "shared_population": int(shared_pop),
-            })
-
-    return pd.DataFrame(rows).sort_values("dependency_score", ascending=False).reset_index(drop=True)
-
-
-def _classify_interaction(src_type: str, dst_type: str) -> str:
-    """Human-readable interaction category."""
-    pair = frozenset((src_type, dst_type))
-    if pair == frozenset(("home", "hospital")):
-        return "доступ к медицине"
-    if pair == frozenset(("home", "shelter")):
-        return "эвакуация"
-    if pair == frozenset(("home", "power_plant")):
-        return "электроснабжение"
-    if pair == frozenset(("home", "warehouse")):
-        return "продовольствие"
-    if pair == frozenset(("hospital", "power_plant")):
-        return "критическая зависимость"
-    if "home" in pair:
-        return "жилой доступ"
-    return "инфраструктурная связь"
-
-
-def _dependency_score(graph: nx.Graph, src: str, dst: str, betweenness: dict) -> float:
-    """Proxy for how much removing both nodes hurts the network.
-
-    Quick heuristic: product of betweenness × connectivity overlap.
-    """
-    src_bet = float(betweenness.get(src, 0.0))
-    dst_bet = float(betweenness.get(dst, 0.0))
-    # Neighbor overlap: Jaccard coefficient.
-    src_nb = set(graph.neighbors(src))
-    dst_nb = set(graph.neighbors(dst))
-    union = src_nb | dst_nb
-    if not union:
-        return 0.0
-    jaccard = float(len(src_nb & dst_nb)) / float(len(union))
-    return (src_bet + dst_bet) * (0.5 + 0.5 * jaccard)
-
-
-def _pair_redundancy(graph: nx.Graph, src: str, dst: str) -> int:
-    """Count edge-disjoint paths between src and dst (up to 5)."""
-    if src not in graph or dst not in graph:
-        return 0
-    try:
-        return min(5, nx.edge_connectivity(graph, src, dst))
-    except (nx.NetworkXError, nx.NetworkXUnfeasible):
-        return 0
-
-
-def _shared_population(
-    graph: nx.Graph,
-    src: str,
-    dst: str,
-    all_lengths: dict,
-) -> int:
-    """Population of homes reachable from both src and dst within radius 15."""
-    radius = 15.0
-    homes = _nodes_by_type(graph, "home")
-    if not homes:
-        return 0
-    src_reachable = set()
-    dst_reachable = set()
-    if src in all_lengths:
-        src_reachable = {h for h in homes if float(all_lengths[src].get(h, float("inf"))) <= radius}
-    if dst in all_lengths:
-        dst_reachable = {h for h in homes if float(all_lengths[dst].get(h, float("inf"))) <= radius}
-    shared = src_reachable & dst_reachable
-    return sum(_population(graph, h) for h in shared)
-
-
-# ---------------------------------------------------------------------------
-# Calculation explanations
-# ---------------------------------------------------------------------------
-
-CALC_EXPLANATIONS: dict[str, str] = {
-    "city_status": (
-        "**Население** — сумма `population` по всем узлам типа `home`.\n\n"
-        "**Изолированные кластеры** — число связных компонент графа, "
-        "содержащих хотя бы один `home`.\n\n"
-        "**Без доступа к ресурсу** — жители `home`-узлов, у которых нет пути "
-        "в графе до ближайшего сервиса (hospital, shelter, power_plant, warehouse). "
-        "Путь ищется по Dijkstra с весом `weight = travel_time`."
-    ),
-    "severity": (
-        "**Уровень ущерба** определяется по доле населения, потерявшего доступ "
-        "к самому дефицитному критическому ресурсу:\n\n"
-        "```\nseverity_value = max(unavailable_hospital, unavailable_shelter, "
-        "unavailable_power) / population_total\n```\n\n"
-        "| Интервал | Уровень |\n|---|---|\n"
-        "| < 10% | низкий |\n| 10–25% | средний |\n"
-        "| 25–50% | высокий |\n| ≥ 50% | критический |"
-    ),
-    "damage_score": (
-        "**damage_score** — структурный ущерб от удаления узла:\n\n"
-        "```\ndamage_score = 1 − LCC_after / LCC_before\n```\n\n"
-        "где `LCC` — размер крупнейшей связной компоненты. "
-        "Высокий `damage_score` означает, что узел был «мостом» или hub, "
-        "без которого сеть распадается на части.\n\n"
-        "⚠️ Urban `damage_score` использует LCC-relative формулу, "
-        "а generic `VulnerabilityLayer` — LCC-fraction по всему графу."
-    ),
-    "robustness": (
-        "**Оценка устойчивости** (robustness_score):\n\n"
-        "```\nrobustness = 1 − max(unavailable_hospital, unavailable_shelter, "
-        "unavailable_power) / population_total\n```\n\n"
-        "Значение 1.0 — все имеют доступ. 0.0 — никто."
-    ),
-    "intervention": (
-        "**Рекомендация** строится перебором: для каждой пары "
-        "(дом без доступа, ближайший сервис без прямой связи) "
-        "добавляется пробная дорога, пересчитывается `city_status`, "
-        "и выбирается та дорога, которая максимально снижает "
-        "суммарное число людей без доступа.\n\n"
-        "Это heuristic greedy search, не глобальный оптимум."
-    ),
-    "access_potential": (
-        "**Потенциал доступности** — среднее обратных расстояний до ближайших "
-        "ресурсов каждой категории:\n\n"
-        "```\naccess = mean(1 / (1 + min_distance_to_resource_type))\n```\n\n"
-        "Чем выше значение, тем лучше узел обеспечен доступом к сервисам."
-    ),
-    "connectivity_potential": (
-        "**Потенциал связности** — комбинация степени узла, closeness-центральности "
-        "и избыточности путей:\n\n"
-        "```\nconnectivity = degree_norm × closeness × (0.3 + 0.7 × redundancy)\n```\n\n"
-        "`redundancy` — доля соседей, с которыми существует альтернативный путь "
-        "при удалении прямого ребра."
-    ),
-    "vulnerability_potential": (
-        "**Потенциал уязвимости** — насколько опасно удаление узла:\n\n"
-        "```\nvulnerability = betweenness × (0.4 + 0.6 × mean_fragility) "
-        "× (0.3 + 0.7 / degree)\n```\n\n"
-        "Высокий betweenness + хрупкие рёбра + мало соседей = уязвимый узел."
-    ),
-    "service_potential": (
-        "**Сервисный потенциал** — ёмкость обслуживания узла, "
-        "нормированная по максимуму в графе:\n\n"
-        "- hospital/shelter → `service_capacity`\n"
-        "- power_plant → `power_capacity`\n"
-        "- warehouse → `food_capacity`\n"
-        "- home → `population`\n\n"
-        "Для intersection и других типов — 0."
-    ),
-    "evacuation_potential": (
-        "**Потенциал эвакуации** — насколько быстро жители могут "
-        "добраться до ближайшего убежища:\n\n"
-        "```\nevacuation = 1 / (1 + min_distance_to_shelter)\n```\n\n"
-        "Чем ближе shelter, тем выше потенциал."
-    ),
-    "interactions": (
-        "**Взаимодействия узлов** — парные характеристики:\n\n"
-        "- **distance** — кратчайший путь (Dijkstra по `weight`)\n"
-        "- **dependency_score** — сумма betweenness × (0.5 + 0.5 × Jaccard соседей)\n"
-        "- **redundancy** — число рёберно-непересекающихся путей (edge connectivity, ≤ 5)\n"
-        "- **shared_population** — суммарное население домов, достижимых из обоих узлов "
-        "в радиусе 15 единиц пути"
-    ),
-}
-
-
-def get_calculation_explanation(key: str) -> str:
-    """Return a Russian explanation text for a named calculation block."""
-    return CALC_EXPLANATIONS.get(str(key), "")

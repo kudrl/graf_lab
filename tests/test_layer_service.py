@@ -282,14 +282,7 @@ def test_urban_layer_skips_regular_graph_and_succeeds_on_city_graph() -> None:
 
     assert city.layers["urban"].status == "success"
     assert "city_damage_dataset_csv" in city.layers["urban"].artifacts
-    assert "urban_node_potentials_csv" in city.layers["urban"].artifacts
-    assert "urban_node_interactions_csv" in city.layers["urban"].artifacts
     assert "damage_score" in city.node_attributes.columns
-    assert "access_potential" in city.node_attributes.columns
-    assert "connectivity_potential" in city.node_attributes.columns
-    assert "dependency_score" in city.pairwise_attributes.columns
-    assert city.node_attributes["access_potential"].dropna().between(0.0, 1.0).all()
-    assert city.pairwise_attributes["dependency_score"].is_monotonic_decreasing
 
 
 def test_ml_export_layer_generic_and_urban_artifacts() -> None:

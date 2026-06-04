@@ -70,19 +70,16 @@ fragility
 
 ## 3. Слои Urban UI
 
-Urban tab состоит из шести практических уровней работы.
+Urban tab состоит из пяти практических уровней работы.
 
 ### Build
 
 Build создаёт или редактирует typed city graph. Сейчас поддерживаются:
 
 - городские пресеты;
-- генерация `Random shape city` для нерегулярной формы города;
 - редактирование city entities;
 - редактирование дорог и мостов;
 - добавление нового объекта с подключением к существующему графу.
-
-Для random-shape сценария сервис также добавляет node-атрибут `elevation`, который потом используется во flood-сценарии и в 3D-визуализации.
 
 После редактирования город снова сериализуется в обычную edge table через `city_graph_to_edges()`, поэтому его можно открыть в общей 3D-вкладке и прогнать через обычные graph layers.
 
@@ -96,8 +93,6 @@ Stress Test создаёт `FailurePlan` и применяет его к тек�
 - атака на мосты и bottleneck-edges;
 - отключение категории объектов;
 - затопление нижнего района.
-
-Flood-сценарий выбирает узлы и рёбра по порогу `water_level`: если `elevation <= water_level`, объект считается затопленным и исключается из доступности/связности.
 
 Сценарий удаляет выбранные узлы и/или рёбра, после чего пересчитывается состояние города.
 
@@ -137,29 +132,6 @@ Protect после отказа ищет простое восстановите
 
 Это heuristic recommendation layer, не оптимизатор с гарантией глобального optimum.
 
-### Potentials
-
-Вкладка Potentials считает 5 heuristic node-level показателей для каждого узла:
-
-- `access_potential` — доступ к ближайшим категориям сервисов;
-- `connectivity_potential` — степень узла, closeness и избыточность путей;
-- `vulnerability_potential` — комбинация betweenness, fragility и низкой локальной redundancy;
-- `service_potential` — относительная ёмкость обслуживания;
-- `evacuation_potential` — близость к ближайшему shelter.
-
-Результат показывается как таблица, radar-chart выбранного узла и 3D-карта, где любой потенциал можно использовать как `z_attr`.
-
-### Interactions
-
-Вкладка Interactions считает pairwise-аналитику между важными городскими объектами (`home`, `hospital`, `power_plant`, `warehouse`, `shelter`):
-
-- `distance` по кратчайшему пути;
-- `dependency_score` как быструю эвристику совместной критичности;
-- `redundancy` как число edge-disjoint путей;
-- `shared_population` как население домов, достижимых из обоих узлов в локальном радиусе.
-
-Это не отдельный generic `PairwiseLayer`, а прикладной Urban-only анализатор поверх city schema.
-
 ### ML Handoff
 
 Urban UI умеет выгружать ZIP для соседнего ML-проекта. Архив содержит:
@@ -185,8 +157,6 @@ Default config:
 enabled = false
 max_nodes = 250
 include_damage_dataset = true
-include_potentials = true
-include_interactions = true
 heavy = false
 ```
 
@@ -222,11 +192,7 @@ power_people_without_access
 
 ```text
 city_damage_dataset_csv
-urban_node_potentials_csv
-urban_node_interactions_csv
 ```
-
-`UrbanLayer` перед расчётом Urban-only метрик восстанавливает typed city graph из city edge table. Так для `damage_score`, potentials и pairwise interactions сохраняются `node_type`, категории сервисов, `elevation` и остальные городские атрибуты.
 
 ## 5. Urban damage dataset
 
@@ -330,3 +296,10 @@ Urban пока experimental. Ограничения:
 - нет обучения ML-модели внутри Graph Lab;
 - Urban `damage_score` ещё не унифицирован с generic `VulnerabilityLayer`;
 - Urban energy features в handoff bundle пока placeholder, если отдельно не маппить туда `FlowLayer`.
+
+Честный статус:
+
+```text
+Urban sandbox = typed city graph overlay + access-loss simulation + ML handoff,
+not a validated urban planning simulator.
+```

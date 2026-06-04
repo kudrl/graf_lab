@@ -7,24 +7,19 @@ from src.services.urban_resilience import (
     FailurePlan,
     add_city_entity,
     apply_city_entity_edits,
-    build_failure_plan,
     build_ml_handoff_bundle,
     city_damage_dataset,
     city_edges_frame,
     city_graph_from_edges,
     city_graph_to_edges,
     city_nodes_frame,
-    compute_node_interactions,
-    compute_node_potentials,
     create_city_preset,
     format_impact_report,
     generate_city_graph,
-    generate_random_shape_city_graph,
     has_city_schema,
     recommend_intervention,
     simulate_failure_impact,
 )
-from src.ui.plots.scene3d import make_city_3d_figure
 
 
 def test_city_graph_roundtrip_preserves_types() -> None:
@@ -100,75 +95,3 @@ def test_ml_handoff_bundle_contains_transfer_materials() -> None:
         assert "city_roads.csv" in names
         assert "ml_manifest.json" in names
         assert "README.md" in names
-
-
-def test_random_shape_city_roundtrip_preserves_elevation() -> None:
-    graph = generate_random_shape_city_graph(intersections=18, homes=8, seed=21)
-    edges = city_graph_to_edges(graph)
-    restored = city_graph_from_edges(edges)
-
-    assert graph.graph["shape"] == "random"
-    assert {"src_elevation", "dst_elevation"}.issubset(edges.columns)
-    assert restored.number_of_nodes() == graph.number_of_nodes()
-    assert any("elevation" in data for _, data in restored.nodes(data=True))
-
-
-def test_flood_level_drives_impact_and_3d_layers() -> None:
-    graph = generate_random_shape_city_graph(intersections=16, homes=8, seed=22)
-    elevations = [float(data["elevation"]) for _, data in graph.nodes(data=True)]
-    water_level = sorted(elevations)[len(elevations) // 2]
-    plan = FailurePlan("unused")
-    flood_plan = build_failure_plan(graph, "Flood by water level", water_level=water_level)
-    impact = simulate_failure_impact(graph, flood_plan)
-
-    assert plan.water_level is None
-    assert flood_plan.water_level == water_level
-    assert impact["flood"]["flooded_nodes"] == len(flood_plan.flooded_nodes)
-    assert impact["flood"]["flooded_population"] >= 0
-
-    fig = make_city_3d_figure(
-        graph,
-        z_attr="elevation",
-        water_level=flood_plan.water_level,
-        flooded_nodes=list(flood_plan.flooded_nodes),
-        flooded_edges=list(flood_plan.flooded_edges),
-    )
-    trace_names = {str(trace.name) for trace in fig.data}
-    assert "water level" in trace_names
-    assert "flooded nodes" in trace_names
-
-
-def test_node_potentials_are_normalized_and_non_empty() -> None:
-    graph = create_city_preset("Компактный город", seed=14)
-
-    frame = compute_node_potentials(graph)
-
-    expected = {
-        "node",
-        "node_type",
-        "access_potential",
-        "connectivity_potential",
-        "vulnerability_potential",
-        "service_potential",
-        "evacuation_potential",
-    }
-    assert expected.issubset(frame.columns)
-    assert len(frame) == graph.number_of_nodes()
-    for column in expected - {"node", "node_type"}:
-        assert frame[column].between(0.0, 1.0).all()
-    assert frame["access_potential"].max() > 0.0
-    assert frame["evacuation_potential"].max() > 0.0
-
-
-def test_node_interactions_are_unique_and_sorted() -> None:
-    graph = create_city_preset("Пригород с рекой", seed=15)
-
-    frame = compute_node_interactions(graph)
-
-    assert not frame.empty
-    assert {"source", "target", "interaction_type", "dependency_score", "redundancy"}.issubset(frame.columns)
-
-    pairs = {frozenset((str(row.source), str(row.target))) for row in frame.itertuples()}
-    assert len(pairs) == len(frame)
-    assert frame["dependency_score"].is_monotonic_decreasing
-    assert (frame["redundancy"] >= 0).all()

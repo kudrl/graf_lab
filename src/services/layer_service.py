@@ -150,12 +150,7 @@ class LayerService:
             ),
             "urban": LayerConfig(
                 enabled=bool(urban),
-                params={
-                    "max_nodes": int(urban_max_nodes),
-                    "include_damage_dataset": True,
-                    "include_potentials": True,
-                    "include_interactions": True,
-                },
+                params={"max_nodes": int(urban_max_nodes), "include_damage_dataset": True},
                 heavy=False,
             ),
             "ml_export": LayerConfig(
