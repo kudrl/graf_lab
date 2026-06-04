@@ -17,13 +17,18 @@ from src.services.urban_resilience import (
     city_graph_to_edges,
     city_nodes_frame,
     city_status,
+    compute_node_interactions,
+    compute_node_potentials,
     create_city_preset,
     format_impact_report,
+    generate_random_shape_city_graph,
+    get_calculation_explanation,
     has_city_schema,
     recommend_intervention,
     simulate_failure_impact,
 )
 from src.state_models import GraphEntry
+from src.ui.plots.scene3d import make_city_3d_figure
 
 SCENARIOS = [
     "Случайная авария",
@@ -91,11 +96,12 @@ def render(active_entry: GraphEntry, seed_val: int, add_graph_callback) -> None:
             dst_col=active_entry.dst_col,
         )
 
+
     if graph is not None:
         _render_action_center(graph, active_entry, seed_val)
 
-    build_tab, stress_tab, impact_tab, protect_tab = st.tabs(
-        ["Собрать", "Стресс-тест", "Последствия", "Защита"]
+    build_tab, stress_tab, impact_tab, protect_tab, pot_tab, interact_tab = st.tabs(
+        ["Собрать", "Стресс-тест", "Последствия", "Защита", "Потенциалы", "Взаимодействия"]
     )
 
     with build_tab:
@@ -108,6 +114,10 @@ def render(active_entry: GraphEntry, seed_val: int, add_graph_callback) -> None:
             st.info("Отчёт о последствиях появится после загрузки typed-графа города.")
         with protect_tab:
             st.info("Рекомендации по защите появятся после загрузки typed-графа города.")
+        with pot_tab:
+            st.info("Потенциалы узлов появятся после загрузки typed-графа города.")
+        with interact_tab:
+            st.info("Взаимодействия узлов появятся после загрузки typed-графа города.")
         return
 
     with stress_tab:
@@ -118,6 +128,13 @@ def render(active_entry: GraphEntry, seed_val: int, add_graph_callback) -> None:
 
     with protect_tab:
         _render_protect(graph)
+
+    with pot_tab:
+        _render_potentials(graph)
+
+    with interact_tab:
+        _render_interactions(graph)
+
 
 
 def _render_action_center(graph, active_entry: GraphEntry, seed_val: int) -> None:
@@ -134,23 +151,40 @@ def _render_action_center(graph, active_entry: GraphEntry, seed_val: int) -> Non
     m3.metric("Жилых кластеров", int(status["isolated_home_clusters"]))
     m4.metric("Без больницы", int(status["hospital_people_without_access"]))
 
-    map_col, note_col = st.columns([3, 2])
-    with map_col:
-        st.plotly_chart(_city_map_figure(graph), use_container_width=True, key="urban_city_map")
-    with note_col:
-        st.markdown(
-            """
-**Как читать карту**
+    with st.expander("📐 Как считаются метрики города", expanded=False):
+        st.markdown(get_calculation_explanation("city_status"))
 
-- зелёные точки — дома;
-- красные — больницы;
-- жёлтые — электростанции;
-- синие — убежища;
-- толстые линии — мосты и потенциальные узкие места.
+    # --- Map: 3D / 2D toggle ---
+    map_mode = st.radio(
+        "Режим карты", ["3D", "2D"], horizontal=True, key="urban_map_mode",
+        label_visibility="collapsed",
+    )
+    impact = st.session_state.get("urban_last_impact")
+    damaged_nodes = list(impact["plan"].removed_nodes) if impact else None
+    damaged_edges = list(impact["plan"].removed_edges) if impact else None
+    water_level = impact["plan"].water_level if impact and impact["plan"].water_level is not None else None
+    flooded_nodes = list(impact["plan"].flooded_nodes) if impact else None
+    flooded_edges = list(impact["plan"].flooded_edges) if impact else None
 
-Нажмите один из сценариев ниже: система пересчитает доступность и покажет, что стоит укрепить первым.
-"""
+    if map_mode == "3D":
+        z_options = ["elevation", "population", "service_capacity", "power_capacity", "food_capacity"]
+        z_attr = st.selectbox(
+            "Высота (Z-ось)", z_options, index=0, key="urban_z_attr",
         )
+        fig_map = make_city_3d_figure(
+            graph,
+            z_attr=str(z_attr),
+            damaged_nodes=damaged_nodes,
+            damaged_edges=damaged_edges,
+            water_level=water_level,
+            flooded_nodes=flooded_nodes,
+            flooded_edges=flooded_edges,
+            title=f"Город: {active_entry.name}",
+            height=620,
+        )
+        st.plotly_chart(fig_map, use_container_width=True, key="urban_city_map_3d")
+    else:
+        st.plotly_chart(_city_map_figure(graph), use_container_width=True, key="urban_city_map")
 
     c1, c2, c3, c4 = st.columns(4)
     if c1.button("Проверить мост", use_container_width=True):
@@ -169,7 +203,6 @@ def _render_action_center(graph, active_entry: GraphEntry, seed_val: int) -> Non
 
     st.button("Открыть этот город в 3D", use_container_width=True, on_click=_open_structure_tab)
 
-    impact = st.session_state.get("urban_last_impact")
     if impact:
         left, right = st.columns([3, 2])
         with left:
@@ -179,6 +212,8 @@ def _render_action_center(graph, active_entry: GraphEntry, seed_val: int) -> Non
                 use_container_width=True,
                 key="urban_action_impact_chart",
             )
+            with st.expander("📐 Как считается уровень ущерба", expanded=False):
+                st.markdown(get_calculation_explanation("severity"))
         with right:
             intervention = recommend_intervention(graph, impact)
             st.markdown(f"**Лучшее действие:** {intervention['action']}")
@@ -208,6 +243,9 @@ def _render_action_center(graph, active_entry: GraphEntry, seed_val: int) -> Non
                     ]
                 )
             )
+            with st.expander("📐 Как работает рекомендация", expanded=False):
+                st.markdown(get_calculation_explanation("intervention"))
+                st.markdown(get_calculation_explanation("robustness"))
 
     _render_ml_handoff(graph, active_entry, key_prefix="action")
 
@@ -281,6 +319,7 @@ def _store_quick_impact(
     *,
     count: int = 1,
     category: str = "power_plant",
+    water_level: float | None = None,
 ) -> None:
     plan = build_failure_plan(
         graph,
@@ -288,6 +327,7 @@ def _store_quick_impact(
         count=int(count),
         category=category,
         seed=int(seed_val),
+        water_level=water_level,
     )
     st.session_state["urban_last_impact"] = simulate_failure_impact(graph, plan)
 
@@ -320,6 +360,36 @@ def _render_build(
         )
         st.session_state.pop("urban_last_impact", None)
         st.rerun()
+
+    with st.expander("Random shape city", expanded=True):
+        r1, r2, r3 = st.columns(3)
+        intersections = r1.slider("Intersections", 10, 80, 32, key="urban_random_intersections")
+        homes = r2.slider("Homes", 4, 80, 24, key="urban_random_homes")
+        random_seed = r3.number_input("Random seed", value=int(seed), step=1, key="urban_random_seed")
+        s1, s2, s3, s4 = st.columns(4)
+        hospitals = s1.slider("Hospitals", 1, 6, 2, key="urban_random_hospitals")
+        power_plants = s2.slider("Power plants", 1, 5, 1, key="urban_random_power")
+        warehouses = s3.slider("Warehouses", 1, 6, 2, key="urban_random_warehouses")
+        shelters = s4.slider("Shelters", 1, 6, 2, key="urban_random_shelters")
+        if st.button("Generate random shape city", use_container_width=True, key="urban_random_shape_btn"):
+            random_graph = generate_random_shape_city_graph(
+                intersections=int(intersections),
+                homes=int(homes),
+                hospitals=int(hospitals),
+                power_plants=int(power_plants),
+                warehouses=int(warehouses),
+                shelters=int(shelters),
+                seed=int(random_seed),
+            )
+            add_graph_callback(
+                f"Urban random shape seed={int(random_seed)}",
+                city_graph_to_edges(random_graph),
+                "urban_resilience:random_shape",
+                "src",
+                "dst",
+            )
+            st.session_state.pop("urban_last_impact", None)
+            st.rerun()
 
     if graph is None or active_entry is None:
         return
@@ -486,6 +556,19 @@ def _render_stress(graph, seed_val: int) -> None:
         )
         category = CATEGORY_OPTIONS[category_label]
 
+    water_level = None
+    if "Flood" in scenario or "Затоп" in scenario:
+        elev_min, elev_max = _elevation_range(graph)
+        default_level = float(elev_min + (elev_max - elev_min) * 0.35)
+        water_level = st.slider(
+            "Уровень воды",
+            min_value=float(elev_min),
+            max_value=float(elev_max),
+            value=default_level,
+            step=max(0.01, float(elev_max - elev_min) / 100.0),
+            key="urban_flood_water_level",
+        )
+
     seed = st.number_input("Seed сценария", value=int(seed_val), step=1, key="urban_stress_seed")
 
     if st.button("Запустить стресс-тест", type="primary", use_container_width=True):
@@ -496,6 +579,7 @@ def _render_stress(graph, seed_val: int) -> None:
             selected_object=selected,
             category=category,
             seed=int(seed),
+            water_level=water_level,
         )
         impact = simulate_failure_impact(graph, plan)
         st.session_state["urban_last_impact"] = impact
@@ -513,6 +597,9 @@ def _render_stress(graph, seed_val: int) -> None:
                 }
             )
         )
+        with st.expander("📐 Как считается ущерб", expanded=False):
+            st.markdown(get_calculation_explanation("severity"))
+            st.markdown(get_calculation_explanation("damage_score"))
 
 
 def _next_node_id(graph, prefix: str) -> str:
@@ -521,6 +608,20 @@ def _next_node_id(graph, prefix: str) -> str:
     while f"{prefix}{idx}" in existing:
         idx += 1
     return f"{prefix}{idx}"
+
+
+def _elevation_range(graph) -> tuple[float, float]:
+    values = [
+        float(data.get("elevation", data.get("y", 0.0)))
+        for _, data in graph.nodes(data=True)
+    ]
+    if not values:
+        return 0.0, 1.0
+    low = min(values)
+    high = max(values)
+    if high <= low:
+        high = low + 1.0
+    return float(low), float(high)
 
 
 def _render_impact(graph, active_entry: GraphEntry) -> None:
@@ -543,6 +644,10 @@ def _render_impact(graph, active_entry: GraphEntry) -> None:
     cols[1].metric("Людей без убежища", int(after["shelter_people_without_access"]))
     cols[2].metric("Людей без электричества", int(after["power_people_without_access"]))
     cols[3].metric("Жилых кластеров", int(after["isolated_home_clusters"]))
+
+    with st.expander("📐 Как считаются потери доступа", expanded=False):
+        st.markdown(get_calculation_explanation("severity"))
+        st.markdown(get_calculation_explanation("city_status"))
 
     with st.expander("Экспорт материалов для ML", expanded=False):
         _render_ml_handoff(graph, active_entry, key_prefix="impact")
@@ -585,6 +690,9 @@ def _render_protect(graph) -> None:
             ]
         )
     )
+    with st.expander("📐 Как работает рекомендация", expanded=False):
+        st.markdown(get_calculation_explanation("intervention"))
+        st.markdown(get_calculation_explanation("robustness"))
 
 
 def _city_map_figure(graph) -> go.Figure:
@@ -709,3 +817,193 @@ def _ml_damage_figure(dataset: pd.DataFrame) -> go.Figure:
     )
     fig.update_layout(template="plotly_white", height=420, margin={"l": 10, "r": 10, "t": 55, "b": 10})
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Potentials tab
+# ---------------------------------------------------------------------------
+
+_POTENTIAL_COLS = [
+    "access_potential",
+    "connectivity_potential",
+    "vulnerability_potential",
+    "service_potential",
+    "evacuation_potential",
+]
+
+_POTENTIAL_LABELS_RU = {
+    "access_potential": "Доступность",
+    "connectivity_potential": "Связность",
+    "vulnerability_potential": "Уязвимость",
+    "service_potential": "Сервисность",
+    "evacuation_potential": "Эвакуация",
+}
+
+
+def _render_potentials(graph) -> None:
+    st.subheader("📊 Потенциалы узлов")
+    st.markdown(
+        "5 городских потенциалов — heuristic-метрики, описывающие роль каждого узла "
+        "в инфраструктурной сети. Все нормированы от 0 до 1."
+    )
+
+    if st.button("Рассчитать потенциалы", type="primary", key="calc_potentials"):
+        with st.spinner("Вычисление потенциалов..."):
+            pot_df = compute_node_potentials(graph)
+        st.session_state["urban_potentials_df"] = pot_df
+
+    pot_df = st.session_state.get("urban_potentials_df")
+    if pot_df is None or pot_df.empty:
+        st.info("Нажмите «Рассчитать потенциалы» для анализа.")
+        return
+
+    # Explanation expanders.
+    with st.expander("📐 Формулы потенциалов", expanded=False):
+        for key in _POTENTIAL_COLS:
+            st.markdown(get_calculation_explanation(key))
+            st.markdown("---")
+
+    # Table.
+    st.dataframe(
+        pot_df.style.format(
+            {col: "{:.3f}" for col in _POTENTIAL_COLS},
+            na_rep="—",
+        ),
+        use_container_width=True,
+        height=320,
+    )
+
+    # --- Radar chart for selected node ---
+    st.markdown("#### 🕸️ Радар узла")
+    node_options = pot_df["node"].tolist()
+    selected_node = st.selectbox("Выберите узел", node_options, key="pot_radar_node")
+    row = pot_df[pot_df["node"] == selected_node]
+    if not row.empty:
+        r_values = [float(row.iloc[0][col]) for col in _POTENTIAL_COLS]
+        categories = [_POTENTIAL_LABELS_RU.get(c, c) for c in _POTENTIAL_COLS]
+        # Close the radar polygon.
+        r_values_closed = r_values + [r_values[0]]
+        categories_closed = categories + [categories[0]]
+        fig_radar = go.Figure()
+        fig_radar.add_trace(go.Scatterpolar(
+            r=r_values_closed,
+            theta=categories_closed,
+            fill="toself",
+            fillcolor="rgba(99, 102, 241, 0.25)",
+            line=dict(color="#6366f1", width=2),
+            name=str(selected_node),
+        ))
+        fig_radar.update_layout(
+            polar=dict(
+                radialaxis=dict(visible=True, range=[0, 1], tickfont=dict(size=9)),
+                bgcolor="rgba(15,23,42,0.8)",
+            ),
+            template="plotly_dark",
+            height=400,
+            margin=dict(l=40, r=40, t=30, b=30),
+            showlegend=False,
+            title=dict(
+                text=f"Потенциалы: {selected_node} ({row.iloc[0].get('node_type', '')})",
+                font=dict(size=14),
+            ),
+        )
+        st.plotly_chart(fig_radar, use_container_width=True, key="pot_radar_chart")
+
+    # --- 3D heatmap by selected potential ---
+    st.markdown("#### 🗺️ 3D-карта потенциала")
+    pot_choice = st.selectbox(
+        "Потенциал для Z-высоты",
+        _POTENTIAL_COLS,
+        format_func=lambda c: _POTENTIAL_LABELS_RU.get(c, c),
+        key="pot_3d_z",
+    )
+    potentials_dict = {}
+    for _, r in pot_df.iterrows():
+        potentials_dict[str(r["node"])] = {col: float(r[col]) for col in _POTENTIAL_COLS}
+    fig_pot_3d = make_city_3d_figure(
+        graph,
+        z_attr=str(pot_choice),
+        potentials=potentials_dict,
+        title=f"3D: {_POTENTIAL_LABELS_RU.get(pot_choice, pot_choice)}",
+        height=560,
+    )
+    st.plotly_chart(fig_pot_3d, use_container_width=True, key="pot_3d_map")
+
+
+# ---------------------------------------------------------------------------
+# Interactions tab
+# ---------------------------------------------------------------------------
+
+
+def _render_interactions(graph) -> None:
+    st.subheader("🔗 Взаимодействия узлов")
+    st.markdown(
+        "Парный анализ между важными объектами города: дистанции, зависимости, "
+        "избыточность путей, общее обслуживаемое население."
+    )
+
+    if st.button("Рассчитать взаимодействия", type="primary", key="calc_interactions"):
+        with st.spinner("Вычисление парных характеристик..."):
+            inter_df = compute_node_interactions(graph)
+        st.session_state["urban_interactions_df"] = inter_df
+
+    inter_df = st.session_state.get("urban_interactions_df")
+    if inter_df is None or inter_df.empty:
+        st.info("Нажмите «Рассчитать взаимодействия» для анализа.")
+        return
+
+    with st.expander("📐 Как считаются взаимодействия", expanded=False):
+        st.markdown(get_calculation_explanation("interactions"))
+
+    # Filter by interaction type.
+    types = sorted(inter_df["interaction_type"].unique().tolist())
+    selected_types = st.multiselect(
+        "Тип взаимодействия", types, default=types, key="inter_type_filter",
+    )
+    filtered = inter_df[inter_df["interaction_type"].isin(selected_types)]
+
+    st.dataframe(
+        filtered.style.format(
+            {"distance": "{:.2f}", "dependency_score": "{:.4f}"},
+            na_rep="—",
+        ),
+        use_container_width=True,
+        height=400,
+    )
+
+    # --- Heatmap of dependency scores ---
+    if len(filtered) > 1:
+        st.markdown("#### 🔥 Тепловая карта зависимостей")
+        all_nodes = sorted(set(filtered["source"].tolist() + filtered["target"].tolist()))
+        matrix = pd.DataFrame(0.0, index=all_nodes, columns=all_nodes)
+        for _, r in filtered.iterrows():
+            matrix.loc[str(r["source"]), str(r["target"])] = float(r["dependency_score"])
+            matrix.loc[str(r["target"]), str(r["source"])] = float(r["dependency_score"])
+        fig_heat = go.Figure(data=go.Heatmap(
+            z=matrix.values.tolist(),
+            x=matrix.columns.tolist(),
+            y=matrix.index.tolist(),
+            colorscale="Magma",
+            reversescale=True,
+            hovertemplate="%{y} ↔ %{x}: %{z:.4f}<extra></extra>",
+        ))
+        fig_heat.update_layout(
+            template="plotly_dark",
+            height=max(350, 30 * len(all_nodes)),
+            margin=dict(l=10, r=10, t=30, b=10),
+            title=dict(text="Зависимости между объектами", font=dict(size=14)),
+            xaxis=dict(tickfont=dict(size=9)),
+            yaxis=dict(tickfont=dict(size=9)),
+        )
+        st.plotly_chart(fig_heat, use_container_width=True, key="inter_heatmap")
+
+    # Top interactions summary.
+    st.markdown("#### 📋 Топ-10 критических взаимодействий")
+    top10 = filtered.head(10)
+    for _idx, r in top10.iterrows():
+        st.markdown(
+            f"**{r['source']}** ↔ **{r['target']}** — "
+            f"_{r['interaction_type']}_ | "
+            f"dist={r['distance']:.1f}, dep={r['dependency_score']:.4f}, "
+            f"redundancy={r['redundancy']}, shared_pop={r['shared_population']}"
+        )
