@@ -533,3 +533,343 @@ def make_3d_traces(
         )
 
     return edge_traces, node_trace
+
+
+# ---------------------------------------------------------------------------
+# City 3D visualization
+# ---------------------------------------------------------------------------
+
+_CITY_NODE_COLORS = {
+    "intersection": "#8b949e",
+    "home": "#4ade80",
+    "hospital": "#ef4444",
+    "power_plant": "#facc15",
+    "warehouse": "#a16207",
+    "shelter": "#3b82f6",
+}
+
+_CITY_NODE_SYMBOLS = {
+    "intersection": "circle",
+    "home": "circle",
+    "hospital": "cross",
+    "power_plant": "diamond",
+    "warehouse": "square",
+    "shelter": "circle",
+}
+
+_CITY_NODE_LABELS_RU = {
+    "intersection": "перекрёсток",
+    "home": "дом",
+    "hospital": "больница",
+    "power_plant": "электростанция",
+    "warehouse": "склад",
+    "shelter": "убежище",
+}
+
+
+def make_city_3d_figure(
+    graph,
+    *,
+    z_attr: str = "population",
+    potentials: Optional[Dict] = None,
+    damaged_nodes: Optional[List] = None,
+    damaged_edges: Optional[List] = None,
+    water_level: float | None = None,
+    flooded_nodes: Optional[List] = None,
+    flooded_edges: Optional[List] = None,
+    title: str = "Городская инфраструктура 3D",
+    height: int = 620,
+) -> go.Figure:
+    """Build an interactive 3D Plotly figure for a typed city graph.
+
+    Parameters
+    ----------
+    graph : nx.Graph
+        City graph with node attributes (type, x, y, population, etc.).
+    z_attr : str
+        Node attribute to map to Z-axis height. Can be a potentials column
+        name if *potentials* dict is provided.
+    potentials : dict, optional
+        Mapping node -> {potential_name: value} from compute_node_potentials.
+    damaged_nodes : list, optional
+        Nodes removed in stress test (highlighted in red on the ground plane).
+    damaged_edges : list, optional
+        Edges removed in stress test (highlighted in red).
+    """
+    fig = go.Figure()
+    nodes = list(graph.nodes())
+    if not nodes:
+        return fig
+
+    # Prepare Z values.
+    z_values = {}
+    for node in nodes:
+        data = graph.nodes[node]
+        if potentials and node in potentials and z_attr in potentials[node]:
+            z_values[node] = float(potentials[node][z_attr])
+        elif z_attr in data:
+            z_values[node] = float(data.get(z_attr, 0.0))
+        else:
+            z_values[node] = 0.0
+
+    z_candidates = list(z_values.values())
+    if water_level is not None and z_attr == "elevation":
+        z_candidates.append(float(water_level))
+    z_max = max((abs(v) for v in z_candidates), default=1.0) or 1.0
+    # Scale Z to a reasonable visual range.
+    z_scale = 3.0 / z_max if z_max > 0 else 1.0
+
+    # ---- Edge traces (road / bridge / damaged) ----
+    edge_groups = {
+        "road": {"xs": [], "ys": [], "zs": [], "color": "#64748b", "width": 1.5, "name": "дорога"},
+        "bridge": {"xs": [], "ys": [], "zs": [], "color": "#f97316", "width": 4.0, "name": "мост"},
+    }
+
+    damaged_edge_set = set()
+    if damaged_edges:
+        damaged_edge_set = {frozenset((str(u), str(v))) for u, v in damaged_edges}
+    flooded_edge_set = set()
+    if flooded_edges:
+        flooded_edge_set = {frozenset((str(u), str(v))) for u, v in flooded_edges}
+
+    dmg_xs, dmg_ys, dmg_zs = [], [], []
+    flood_xs, flood_ys, flood_zs = [], [], []
+
+    for u, v, data in graph.edges(data=True):
+        edge_type = str(data.get("edge_type", "road"))
+        ux = float(graph.nodes[u].get("x", 0.0))
+        uy = float(graph.nodes[u].get("y", 0.0))
+        uz = z_values.get(u, 0.0) * z_scale
+        vx = float(graph.nodes[v].get("x", 0.0))
+        vy = float(graph.nodes[v].get("y", 0.0))
+        vz = z_values.get(v, 0.0) * z_scale
+
+        if frozenset((str(u), str(v))) in damaged_edge_set:
+            dmg_xs.extend([ux, vx, None])
+            dmg_ys.extend([uy, vy, None])
+            dmg_zs.extend([0.0, 0.0, None])
+            continue
+        if frozenset((str(u), str(v))) in flooded_edge_set:
+            flood_xs.extend([ux, vx, None])
+            flood_ys.extend([uy, vy, None])
+            flood_zs.extend([uz, vz, None])
+            continue
+
+        group = edge_groups.get(edge_type, edge_groups["road"])
+        group["xs"].extend([ux, vx, None])
+        group["ys"].extend([uy, vy, None])
+        group["zs"].extend([uz, vz, None])
+
+    for _key, group in edge_groups.items():
+        if group["xs"]:
+            fig.add_trace(go.Scatter3d(
+                x=group["xs"], y=group["ys"], z=group["zs"],
+                mode="lines",
+                line=dict(color=group["color"], width=group["width"]),
+                name=group["name"],
+                hoverinfo="skip",
+                showlegend=True,
+            ))
+
+    if dmg_xs:
+        fig.add_trace(go.Scatter3d(
+            x=dmg_xs, y=dmg_ys, z=dmg_zs,
+            mode="lines",
+            line=dict(color="#dc2626", width=5.0, dash="dash"),
+            name="повреждённая связь",
+            hoverinfo="skip",
+            showlegend=True,
+        ))
+
+    if flood_xs:
+        fig.add_trace(go.Scatter3d(
+            x=flood_xs, y=flood_ys, z=flood_zs,
+            mode="lines",
+            line=dict(color="#38bdf8", width=5.0),
+            opacity=0.82,
+            name="flooded roads",
+            hoverinfo="skip",
+            showlegend=True,
+        ))
+
+    # ---- Node traces (grouped by type) ----
+    damaged_set = set(map(str, damaged_nodes or []))
+
+    for node_type, color in _CITY_NODE_COLORS.items():
+        type_nodes = [
+            (n, graph.nodes[n]) for n in nodes
+            if graph.nodes[n].get("type") == node_type and str(n) not in damaged_set
+        ]
+        if not type_nodes:
+            continue
+
+        xs = [float(d.get("x", 0.0)) for _, d in type_nodes]
+        ys = [float(d.get("y", 0.0)) for _, d in type_nodes]
+        zs = [z_values.get(n, 0.0) * z_scale for n, _ in type_nodes]
+        sizes = _city_node_sizes(type_nodes, node_type)
+        texts = _city_hover_texts(type_nodes, z_attr, z_values, potentials)
+
+        fig.add_trace(go.Scatter3d(
+            x=xs, y=ys, z=zs,
+            mode="markers+text",
+            marker=dict(
+                size=sizes,
+                color=color,
+                symbol=_CITY_NODE_SYMBOLS.get(node_type, "circle"),
+                opacity=0.92,
+                line=dict(color="#1e293b", width=1),
+            ),
+            text=[str(n) for n, _ in type_nodes],
+            textposition="top center",
+            textfont=dict(size=9, color="#e2e8f0"),
+            customdata=texts,
+            hovertemplate="%{customdata}<extra></extra>",
+            name=_CITY_NODE_LABELS_RU.get(node_type, node_type),
+            showlegend=True,
+        ))
+
+    # Damaged nodes: show as red X on the ground plane.
+    if damaged_set:
+        dmg_nodes = [(n, graph.nodes[n]) for n in damaged_set if n in graph]
+        if dmg_nodes:
+            fig.add_trace(go.Scatter3d(
+                x=[float(d.get("x", 0.0)) for _, d in dmg_nodes],
+                y=[float(d.get("y", 0.0)) for _, d in dmg_nodes],
+                z=[0.0] * len(dmg_nodes),
+                mode="markers+text",
+                marker=dict(size=14, color="#dc2626", symbol="x", opacity=0.9,
+                            line=dict(color="#991b1b", width=2)),
+                text=[str(n) for n, _ in dmg_nodes],
+                textposition="top center",
+                textfont=dict(size=10, color="#fca5a5"),
+                name="удалённые объекты",
+                showlegend=True,
+                hovertemplate="<b>%{text}</b><br>УДАЛЁН<extra></extra>",
+            ))
+
+    flooded_set = set(map(str, flooded_nodes or []))
+    if flooded_set:
+        flood_nodes = [(n, graph.nodes[n]) for n in flooded_set if n in graph]
+        if flood_nodes:
+            fig.add_trace(go.Scatter3d(
+                x=[float(d.get("x", 0.0)) for _, d in flood_nodes],
+                y=[float(d.get("y", 0.0)) for _, d in flood_nodes],
+                z=[z_values.get(n, 0.0) * z_scale + 0.04 for n, _ in flood_nodes],
+                mode="markers",
+                marker=dict(
+                    size=18,
+                    color="#0ea5e9",
+                    symbol="circle",
+                    opacity=0.55,
+                    line=dict(color="#bae6fd", width=2),
+                ),
+                text=[str(n) for n, _ in flood_nodes],
+                name="flooded nodes",
+                hovertemplate="<b>%{text}</b><br>flooded<extra></extra>",
+                showlegend=True,
+            ))
+
+    if water_level is not None:
+        xs_all = [float(graph.nodes[n].get("x", 0.0)) for n in nodes]
+        ys_all = [float(graph.nodes[n].get("y", 0.0)) for n in nodes]
+        pad = 0.6
+        x0, x1 = min(xs_all) - pad, max(xs_all) + pad
+        y0, y1 = min(ys_all) - pad, max(ys_all) + pad
+        wz = float(water_level) * z_scale if z_attr == "elevation" else 0.0
+        fig.add_trace(go.Mesh3d(
+            x=[x0, x1, x1, x0],
+            y=[y0, y0, y1, y1],
+            z=[wz, wz, wz, wz],
+            i=[0, 0],
+            j=[1, 2],
+            k=[2, 3],
+            color="#0284c7",
+            opacity=0.28,
+            name="water level",
+            hovertemplate=f"water_level={float(water_level):.2f}<extra></extra>",
+            showlegend=True,
+        ))
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=16, color="#e2e8f0")),
+        template="plotly_dark",
+        height=int(height),
+        margin=dict(l=0, r=0, t=40, b=0),
+        showlegend=True,
+        legend=dict(
+            orientation="h", y=-0.05, x=0.5, xanchor="center",
+            font=dict(size=11, color="#94a3b8"),
+            bgcolor="rgba(15,23,42,0.6)",
+        ),
+        scene=dict(
+            xaxis=dict(showbackground=False, showticklabels=False, title=""),
+            yaxis=dict(showbackground=False, showticklabels=False, title=""),
+            zaxis=dict(
+                showbackground=False,
+                showticklabels=True,
+                title=dict(text=z_attr, font=dict(size=11, color="#94a3b8")),
+                tickfont=dict(size=9, color="#64748b"),
+            ),
+            aspectmode="manual",
+            aspectratio=dict(x=1, y=1, z=0.5),
+        ),
+    )
+    return fig
+
+
+def _city_node_sizes(
+    type_nodes: List,
+    node_type: str,
+) -> List[float]:
+    """Compute marker sizes for city nodes based on capacity/population."""
+    if node_type == "intersection":
+        return [6.0] * len(type_nodes)
+    raw = []
+    for _, d in type_nodes:
+        val = max(
+            float(d.get("population", 0) or 0),
+            float(d.get("service_capacity", 0) or 0),
+            float(d.get("power_capacity", 0) or 0),
+            float(d.get("food_capacity", 0) or 0),
+        )
+        raw.append(val)
+    if not raw:
+        return []
+    mx = max(raw) or 1.0
+    return [8.0 + 14.0 * (v / mx) for v in raw]
+
+
+def _city_hover_texts(
+    type_nodes: List,
+    z_attr: str,
+    z_values: Dict,
+    potentials: Optional[Dict],
+) -> List[str]:
+    """Build rich hover text for each node."""
+    texts = []
+    for node, d in type_nodes:
+        label = _CITY_NODE_LABELS_RU.get(str(d.get("type", "node")), str(d.get("type", "node")))
+        parts = [
+            f"<b>{node}</b>",
+            f"тип: {label}",
+        ]
+        pop = int(d.get("population", 0) or 0)
+        if pop > 0:
+            parts.append(f"жители: {pop}")
+        cap = int(d.get("service_capacity", 0) or 0)
+        if cap > 0:
+            parts.append(f"ёмкость: {cap}")
+        pwr = int(d.get("power_capacity", 0) or 0)
+        if pwr > 0:
+            parts.append(f"мощность: {pwr}")
+        food = int(d.get("food_capacity", 0) or 0)
+        if food > 0:
+            parts.append(f"продовольствие: {food}")
+        z_val = z_values.get(node, 0.0)
+        parts.append(f"{z_attr}: {z_val:.3f}")
+        if potentials and node in potentials:
+            for k, v in potentials[node].items():
+                if k != z_attr and k not in ("node", "node_type"):
+                    parts.append(f"{k}: {float(v):.3f}")
+        texts.append("<br>".join(parts))
+    return texts
